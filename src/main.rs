@@ -4,9 +4,15 @@ use std::{
     fs::File,
     io::{self, Read},
 };
-use std::io::{Cursor, BufRead, BufReader, Seek, SeekFrom, BufWriter};
+use std::io::{Cursor, BufRead, BufReader, Seek, SeekFrom, BufWriter, Result};
 use std::ffi::CString;
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
+
+pub trait FromReader<R>
+    where R : BufRead + Seek, Self : Sized
+{
+    fn from_reader(_: &mut R) -> Result<Self>;
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SagasColor {
@@ -16,9 +22,46 @@ pub struct SagasColor {
     a: u8,
 }
 
-impl SagasColor {
-    fn from_reader<R: BufRead>(rd: &mut R) -> io::Result<Self> {
-        let ( r,g, b, a) = (
+#[derive(Debug)]
+struct SagasColorLUT {
+    colors: Vec<SagasColor>,
+}
+
+#[derive(Debug)]
+struct SagasHeader {
+    unk0: u64,
+    unk1: u32,
+    unk2: u32,
+    unk3: u32,
+    unk4: u32,
+    string0: CString, // source file path
+    unk5: u32,
+    unk6: u32,
+    unk7: u32,
+    image_offset: u32,
+    width: u16,
+    height: u16,
+    unk9: u32,
+    unk10: u32,
+    color_table_offset: u32,
+    unk12: u16,
+    unk13: u16,
+    unk14: u32,
+    string1: CString,
+}
+
+#[derive(Debug)]
+struct SagasFile {
+    header: SagasHeader,
+    lut: SagasColorLUT,
+    image: Vec<u8>,
+}
+
+impl<R> FromReader<R> for SagasColor
+    where R : BufRead + Seek
+{
+    fn from_reader(rd: &mut R) -> Result<Self> {
+        let (r,g, b, a) = (
             rd.read_u8()?,
             rd.read_u8()?,
             rd.read_u8()?,
@@ -40,16 +83,12 @@ impl SagasColor {
     }
 }
 
-#[derive(Debug)]
-struct SagasColorLUT {
-    unk0: u32,
-    colors: Vec<SagasColor>,
-}
-
-impl SagasColorLUT {
-    fn from_reader<R: BufRead>(r: &mut R, num_colors: usize) -> io::Result<Self> {
-        let unk0 = r.read_u32::<L>()?; // number of colors?
-        let mut colors = Vec::with_capacity(unk0 as _);
+impl<R> FromReader<R> for SagasColorLUT
+    where R : BufRead + Seek
+{
+    fn from_reader(r: &mut R) -> Result<Self> {
+        let num_colors = 256; // Always 256 colors?
+        let mut colors = Vec::with_capacity(num_colors);
         (0..num_colors).for_each(|_| colors.push(SagasColor::from_reader(r).unwrap()));
 
         // Swizzle table.
@@ -60,68 +99,49 @@ impl SagasColorLUT {
         }
 
         Ok(SagasColorLUT {
-            unk0,
             colors,
         })
     }
 }
 
-#[derive(Debug)]
-struct SagasHeader {
-    unk0: u64,
-    unk1: u32,
-    unk2: u32,
-    unk3: u32,
-    unk4: u32,
-    string0: CString, // source file path
-    unk5: u32,
-    unk6: u32,
-    unk7: u32,
-    unk8: u32,
-    width: u16,
-    height: u16,
-    unk9: u32,
-    unk10: u32,
-    unk11: u32, // palette width?
-    unk12: u16, // palette width?
-    unk13: u16, // palette height?
-    unk14: u32, // palette width?
-    string1: CString,
+impl<R> FromReader<R> for CString
+    where R : BufRead + Seek
+{
+    fn from_reader(r: &mut R) -> Result<Self> {
+        let mut buffer = Vec::new();
+        r.read_until(0, &mut buffer)?;
+        buffer.pop();
+        Ok(unsafe { CString::from_vec_unchecked(buffer) })
+    }
 }
 
-impl SagasHeader {
-    fn from_reader<R: BufRead>(r: &mut R) -> io::Result<Self> {
+impl<R> FromReader<R> for SagasHeader
+    where R : BufRead + Seek
+{
+    fn from_reader(r: &mut R) -> Result<Self> {
         let unk0 = r.read_u64::<L>()?;
-        let unk1 = r.read_u32::<L>()?; // offset to color table?
+        let unk1 = r.read_u32::<L>()?;
         let unk2 = r.read_u32::<L>()?;
         let unk3 = r.read_u32::<L>()?;
         let unk4 = r.read_u32::<L>()?;
-
-        let mut string0 = Vec::new();
-        r.read_until(0, &mut string0)?;
-        string0.pop();
-        let string0 = unsafe { CString::from_vec_unchecked(string0) };
+        let string0 = CString::from_reader(r)?;
 
         let unk5 = r.read_u32::<L>()?;
         let unk6 = r.read_u32::<L>()?;
-        let unk7 = r.read_u32::<L>()?; //
-        let unk8 = r.read_u32::<L>()?; // offset to beginning of image
+        let unk7 = r.read_u32::<L>()?;
+        let image_offset = r.read_u32::<L>()?;
 
         let width = r.read_u16::<L>()?;
         let height = r.read_u16::<L>()?;
 
         let unk9 = r.read_u32::<L>()?;
         let unk10 = r.read_u32::<L>()?;
-        let unk11 = r.read_u32::<L>()?; // offset to beginning of color table
+        let color_table_offset = r.read_u32::<L>()?; // offset to beginning of color table
 
         let unk12 = r.read_u16::<L>()?;
         let unk13 = r.read_u16::<L>()?;
         let unk14 = r.read_u32::<L>()?;
-
-        let mut string1 = Vec::new();
-        r.read_until(0, &mut string1)?;
-        string1.pop();
-        let string1 = unsafe { CString::from_vec_unchecked(string1) };
+        let string1 = CString::from_reader(r)?;
 
         Ok(SagasHeader {
             unk0,
@@ -133,12 +153,12 @@ impl SagasHeader {
             unk5,
             unk6,
             unk7,
-            unk8,
+            image_offset,
             width,
             height,
             unk9,
             unk10,
-            unk11,
+            color_table_offset,
             unk12,
             unk13,
             unk14,
@@ -147,33 +167,42 @@ impl SagasHeader {
     }
 }
 
-#[derive(Debug)]
-struct SagasFile {
-    header: SagasHeader,
-    lut: SagasColorLUT,
-    image: Vec<u8>,
-}
-
-impl SagasFile {
-    fn from_reader<R: BufRead + Seek>(r: &mut R, color_offset: usize) -> io::Result<Self> {
+impl<R> FromReader<R> for SagasFile
+    where R : BufRead + Seek
+{
+    fn from_reader(r: &mut R) -> Result<Self> {
         let header = SagasHeader::from_reader(r)?;
 
-        // Move reader to correct color table offset.
-        r.seek(SeekFrom::Start((header.unk11 - 4) as _));
-        let lut = SagasColorLUT::from_reader(r, (header.unk12 * header.unk13) as _)?;
+        // Start reading the color table.
+        r.seek(SeekFrom::Start((header.color_table_offset) as _));
+        let lut = SagasColorLUT::from_reader(r)?;
 
-        // Move reader to image offset.
-        r.seek(SeekFrom::Start(header.unk8 as _));
-        let mut buffer = Vec::with_capacity(header.width as usize * header.height as usize);
+        // Start reading the image.
+        r.seek(SeekFrom::Start(header.image_offset as _));
+        let mut image = Vec::with_capacity(header.width as usize * header.height as usize);
         for _ in 0..header.width * header.height {
-            buffer.push(r.read_u8().unwrap());
+            image.push(r.read_u8().unwrap());
         }
 
         Ok(SagasFile {
             header,
             lut,
-            image: buffer,
+            image,
         })
+    }
+}
+
+impl SagasFile {
+    fn get_header(&self) -> &SagasHeader {
+        &self.header
+    }
+
+    fn get_color_table(&self) -> &SagasColorLUT {
+        &self.lut
+    }
+
+    fn get_image(&self) -> &[u8] {
+        self.image.as_slice()
     }
 }
 
@@ -203,17 +232,21 @@ fn main() {
     }
 
     let mut buf_reader = BufReader::new(bin.unwrap());
-    let sf = SagasFile::from_reader(&mut buf_reader, 0).unwrap();
-    println!("{:#?}", sf);
+    if let Ok(sf) = SagasFile::from_reader(&mut buf_reader) {
+        println!("{:#?}", sf);
 
-    let mut image: RgbaImage = RgbaImage::new(sf.header.width as _, sf.header.height as _);
-    for y in 0..sf.header.height as usize {
-        for x in 0..sf.header.width as usize {
-            let idx = sf.image[x + y * sf.header.width as usize];
-            let color: SagasColor = sf.lut.colors[idx as usize];
-            image.put_pixel(x as u32, y as u32, Rgba([color.r, color.g, color.b, color.a]));
+        let (header, image, color_table) = (sf.get_header(), sf.get_image(), sf.get_color_table());
+        let (width, height) = (header.width as usize, header.height as usize);
+
+        let mut rgba_image: RgbaImage = RgbaImage::new(width as _, height as _);
+        for y in 0..height {
+            for x in 0..width {
+                let i = image[x + y * width] as usize;
+                let c : SagasColor = color_table.colors[i];
+                let (x, y) = (x as u32, y as u32);
+                rgba_image.put_pixel(x, y, Rgba([c.r, c.g, c.b, c.a]));
+            }
         }
+        rgba_image.save(format!("out/test.png"));
     }
-
-    image.save(format!("out/test.png"));
 }
