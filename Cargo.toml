@@ -1,0 +1,10 @@
+[package]
+name = "dbz-sagas-extractor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ricky van den Waardenburg <rickyvdw@live.nl>"]
+
+[dependencies]
+clap = "2.27.1"
+image = "0.24.5"
+byteorder = "1.2.7"
